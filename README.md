@@ -2,9 +2,9 @@
 Given a song name, artist, lyrics or whatever, search for and download a song using yt-dlp.
 
 * Handles multiple arguments (including embedded spaces) correctly. 
-* Uses youtube.com URL, instead of ytsearch:
+* Uses youtube.com URL, instead of yt-dlp's ytsearch.
 * Allows `-c` to restrict search to videos with closed captions (manually generated lyrics/subtitles).
-*  Can read search terms from a file, downloading one song per line.
+* Can read search terms from a file, downloading one song per line.
 * If `xsel` is installed, will search for whatever words are currently highlighted by the mouse cursor and download that song.
 * Can download videos instead by changing the script's name: `ln -s getsong getvideo`
 
