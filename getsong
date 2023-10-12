@@ -1,0 +1,198 @@
+#!/bin/bash
+
+# Given a bunch of keywords, download the most likely song from YouTube.
+
+# Searching is builtin to yt-dlp, but it has some problems:
+#
+# 1. youtube-dl downloads one song per argument.
+#    E.g., 'youtube-dl -x kelis acapella david guetta remix' downloads 5 songs!
+#
+# 2. There is no option to prioritize Closed Caption subtitles. 
+
+# This uses an undocumented URL parameter, sp=EgIoAQ%253D%253D, in
+# YouTube to prefer videos with closed caption subtitles. For example,
+#
+#     yt-dlp --embed-subs --playlist-items 1:1 \
+#     https://www.youtube.com/results?search_query=%22A+year+ago+last+Thursday%22&sp=EgIoAQ%253D%253D
+
+usage() {
+    local b=$(basename $0)
+    echo $b:
+    if [[ -z "$xflag" ]]; then
+	echo Given keywords, download the most likely video.
+    else
+	echo Given a song name, artist, lyrics or whatever, download a song.
+    fi
+
+    cat <<EOF 
+
+Usage: $b [ -c ] [ keywords ... ]
+       
+         -c: filter to only results with closed captions (subtitles)
+
+   keywords: a song title, lyrics, artist name, or anything, really.
+
+If no keywords are specified, then the X selection (whatever was
+last highlighted by the mouse) will be used.
+
+If you redirect a file to stdin, then $b will perform a search for
+every song listed in the file, one per line. 
+
+EOF
+    local s=$(xsel 2>/dev/null)
+    if [[ "$s" ]]; then
+	echo "Current X selection: '$(tput smso)$s$(tput rmso)'"
+    else
+	echo "There is no current X selection."
+	if [ -z "$DISPLAY" ]; then
+	    echo "(Because you're not running X.)"
+	fi
+    fi
+
+}
+
+
+# Boolean to read from stdin if not a tty. (Empty string is False).
+declare -g isatty=$(stty -F /dev/stdin 2>/dev/null)
+declare -g cflag="" xflag="" 
+
+# -h or --help
+if [[ $1 == *-h*  ]]; then usage; exit; fi
+
+# -c or --closed-captions
+if [[ "$1" == *-c* ]]; then cflag="&sp=EgIoAQ%253D%253D"; shift; fi
+
+# Use current X selection if no search terms on cmdline or stdin.
+if [[ "$isatty" && $# -eq 0 ]]; then
+    set - `xsel` 2>/dev/null && echo searching for "'$@'" >&2
+
+    # If args are still empty, show usage.
+    if [[ $# -eq 0 ]]; then usage; exit 1; fi
+fi
+
+main() {
+    case "$0" in
+	*video*)			# script name is "getvideo"
+	    xflag=""
+	    ;;
+	*audio*|*song*)			# script name is "getsong"
+	    xflag="--extract-audio"
+	    ;;
+	*)
+	    echo "Unknown executable filename: $0" >&2
+	    exit 1
+	    ;;
+    esac
+
+
+    local ytargs=()
+    ytargs+=($xflag)		# Extract audio if $0 is "getsong"
+    ytargs+=(--add-metadata)
+    ytargs+=(--embed-thumbnail)
+    ytargs+=(--embed-subs)
+    ytargs+=(--playlist-items 1:1)	# Get only first result from search.
+
+    # To multiplex opus audio with vtt subtitles into a single .mka file.
+    ytargs+=(--remux-video 'opus>mka')
+
+    if type aria2c >/dev/null 2>&1; then
+	ytargs+=(--external-downloader=aria2c)
+    fi
+
+    if [[ "$isatty" ]] ; then	# Typical usage from the command line
+	get1song "$@"
+    else	# Standard input is not a TTY, so we're reading from a file.
+	echo "Downloading all tracks from stdin"
+
+	IFS=$'\n'
+	while :; do
+	    read || break
+	    if [[ -z "$REPLY" ]]; then continue; fi
+	    echo "$REPLY"
+	    #yt-dlp --default-search=auto ${ytargs[@]} "$REPLY"
+	    get1song $REPLY
+	done
+
+    fi
+}
+
+get1song() {
+    local url arg
+    for arg; do
+	if [[ -z $url ]]; then
+	    url="https://www.youtube.com/results?search_query="
+	else
+	    url+="+"
+	fi
+
+ 	if [[ $arg =~ " " ]]; then	        # Contains a space?
+	    arg=${arg// /+}			# Replace spaces with +.
+	    arg=\"${arg}\"			# Enclose in double quotes
+	fi
+	
+	url+="$(uriescape "$arg")" 
+    done
+
+    url+="${cflag}"	# Optionally filter to only closed captioned results.
+
+    echo "yt-dlp ${ytargs[@]} '$url'"
+    yt-dlp ${ytargs[@]} "$url"
+}
+
+
+uriescape() {
+    # FROM RFC 2396, Uniform Resource Identifiers
+    #    urireserved=";/?:@&=+$,"
+    #    alnum="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    #    mark="\-\_\.\!\~\*\'\(\)"
+    #    unreserved="$alnum$mark"
+    #    okaychars="$unreserved$urireserved"
+    #    excluded='] <>#%"{}|\^[`'    # also exclude control (00-1F and 7F hex).
+    local -i i
+    for (( i=0; i<${#1}; i++ )); do
+        local c=${1:i:1}
+        case $c in
+            a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9|\;|\/|\?|\:|\@|\&|\=|\+|\$|\,|\-|\_|\.|\!|\~|\*|\'|\(|\))
+                echo -n "$c"
+                ;;
+            *) echo -n "$c" | hexdump -ve '/1 ":%02X"' | tr : %
+               ;;
+        esac
+    done
+    echo
+}
+
+unuriescape() {
+    # FROM RFC 2396, Uniform Resource Identifiers
+    #    urireserved=";/?:@&=+$,"
+    #    alnum="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    #    mark="\-\_\.\!\~\*\'\(\)"
+    #    unreserved="$alnum$mark"
+    #    okaychars="$unreserved$urireserved"
+    #    excluded='] <>#%"{}|\^[`'    # also exclude control (00-1F and 7F hex).
+    local -i i
+    for (( i=0; i<${#1}; i++ )); do
+        local c=${1:i:1}
+        case $c in
+            %) # Next two letters must be hex digits.
+                local -i j=i+1; local -i k=i+2
+                local h="${1:j:1}${1:k:1}"
+                i=i+2
+                c=$(echo -en '\x'"$h")
+                ;;
+        esac
+        echo -n "$c"
+    done
+    echo
+}
+
+main "$@"
+
+
+
+# notes
+# Old method (does not prefer closed captions):
+# yt-dlp --default-search=auto ${ytargs[@]} "$*"
+
+# New way:
+# yt-dlp https://www.youtube.com/results?search_query=%22A+year+ago+last+Thursday%22&sp=EgIoAQ%253D%253D --embed-subs --playlist-items 1:1
